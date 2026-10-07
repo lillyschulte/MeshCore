@@ -26,7 +26,9 @@
   #define UI_RECENT_LIST_SIZE 4
 #endif
 
-#define MIN_VALID_EPOCH  1704067200UL   // 2024-01-01, anything before means the clock was never set
+// 2025-01-01. Without an RTC chip the clock boots at 15 May 2024 (VolatileRTCClock), so anything
+// before this means the time was never synced
+#define MIN_VALID_EPOCH  1735689600UL
 
 #include "icons.h"
 
@@ -34,6 +36,23 @@ static const char* const weekdays[] = { "Thu", "Fri", "Sat", "Sun", "Mon", "Tue"
 static const char* const months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
 // days since 1970-01-01 -> civil date (Howard Hinnant's algorithm)
+// civil date -> days since 1970-01-01 (Howard Hinnant's algorithm)
+static int32_t daysFromCivil(int y, int m, int d) {
+  y -= m <= 2;
+  int32_t era = (y >= 0 ? y : y - 399) / 400;
+  uint32_t yoe = (uint32_t)(y - era * 400);
+  uint32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  uint32_t doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+  return era * 146097 + (int32_t)doe - 719468;
+}
+
+// days since epoch of the last Sunday in month m (m = 3 or 10, both have 31 days)
+static int32_t lastSundayOf(int y, int m) {
+  int32_t last = daysFromCivil(y, m, 31);
+  int weekday = (last + 4) % 7;   // 0 = Sunday (1970-01-01 was a Thursday)
+  return last - weekday;
+}
+
 static void civilFromDays(int32_t z, int& y, int& m, int& d) {
   z += 719468;
   int32_t era = (z >= 0 ? z : z - 146096) / 146097;
@@ -45,6 +64,15 @@ static void civilFromDays(int32_t z, int& y, int& m, int& d) {
   d = doy - (153*mp + 2)/5 + 1;
   m = mp < 10 ? mp + 3 : mp - 9;
   y = yy + (m <= 2);
+}
+
+// EU summer time: from the last Sunday of March to the last Sunday of October, switching at 01:00 UTC
+static bool isEUSummerTime(uint32_t utc) {
+  int y, m, d;
+  civilFromDays(utc / 86400, y, m, d);
+  uint32_t start = (uint32_t) lastSundayOf(y, 3) * 86400 + 3600;
+  uint32_t end = (uint32_t) lastSundayOf(y, 10) * 86400 + 3600;
+  return utc >= start && utc < end;
 }
 
 class SplashScreen : public UIScreen {
@@ -684,7 +712,10 @@ bool UITask::isClockSet() const {
 }
 
 uint32_t UITask::getLocalTime() const {
-  return rtc_clock.getCurrentTime() + (int32_t)_ui_prefs.tz_offset_min * 60;
+  uint32_t utc = rtc_clock.getCurrentTime();
+  uint32_t t = utc + (int32_t)_ui_prefs.tz_offset_min * 60;
+  if (_ui_prefs.dst_rule == DST_RULE_EU && isEUSummerTime(utc)) t += 3600;
+  return t;
 }
 
 void UITask::formatClock(uint32_t local_time, char* dest, bool with_ampm) const {

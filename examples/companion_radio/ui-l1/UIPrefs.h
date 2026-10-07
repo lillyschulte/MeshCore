@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <stddef.h>
 #include <helpers/IdentityStore.h>   // FILESYSTEM, File
 #include <helpers/TxtDataHelpers.h>
 
@@ -10,6 +11,9 @@
 #define UI_PREFS_FILE    "/ui_prefs"
 #define UI_PREFS_MAGIC   0x4C31   // 'L1'
 
+#define DST_RULE_NONE    0
+#define DST_RULE_EU      1   // last Sun of March .. last Sun of October, 01:00 UTC
+
 // UI-only preferences, kept out of NodePrefs so its on-disk format stays upstream compatible
 struct UIPrefs {
   uint16_t magic;
@@ -18,6 +22,8 @@ struct UIPrefs {
   uint8_t  batt_percent;      // show battery as % instead of an icon (was reserved, old files read 0)
   uint16_t screen_timeout_s;
   char     canned[UI_CANNED_COUNT][UI_CANNED_LEN];
+  // --- fields below were added later; older (shorter) files load with them as 0
+  uint8_t  dst_rule;          // DST_RULE_*
 
   void setDefaults() {
     static const char* defaults[UI_CANNED_COUNT] = {
@@ -43,8 +49,10 @@ struct UIPrefs {
 #endif
     if (!file) return;
     UIPrefs tmp;
-    bool ok = file.read((uint8_t *)&tmp, sizeof(tmp)) == sizeof(tmp);
+    memset(&tmp, 0, sizeof(tmp));
+    int n = file.read((uint8_t *)&tmp, sizeof(tmp));
     file.close();
+    bool ok = n >= (int) offsetof(UIPrefs, dst_rule);   // accept files from before newer fields were added
     if (ok && tmp.magic == UI_PREFS_MAGIC) {
       *this = tmp;
       for (int i = 0; i < UI_CANNED_COUNT; i++) canned[i][UI_CANNED_LEN - 1] = 0;  // ensure terminated

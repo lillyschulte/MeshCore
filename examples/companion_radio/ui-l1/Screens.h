@@ -405,6 +405,7 @@ class SettingsScreen : public ListScreen, public KeyboardListener {
     GPS,
 #endif
     TIMEZONE,
+    SUMMER_TIME,
     CLOCK_FMT,
     SCREEN_OFF,
     BATTERY,
@@ -449,6 +450,10 @@ protected:
         snprintf(value, value_size, "UTC%c%d:%02d", sign, off / 60, off % 60);
         break;
       }
+      case SUMMER_TIME:
+        strcpy(label, "Summer time");
+        strcpy(value, p.dst_rule == DST_RULE_EU ? "EU" : "Off");
+        break;
       case CLOCK_FMT:
         strcpy(label, "Clock");
         strcpy(value, p.clock_24h ? "24h" : "12h");
@@ -482,6 +487,10 @@ protected:
         p.tz_offset_min += dir * 15;
         if (p.tz_offset_min < -12*60) p.tz_offset_min = 14*60;
         if (p.tz_offset_min > 14*60) p.tz_offset_min = -12*60;
+        _task->markUIPrefsDirty();
+        return true;
+      case SUMMER_TIME:
+        p.dst_rule = p.dst_rule == DST_RULE_EU ? DST_RULE_NONE : DST_RULE_EU;
         _task->markUIPrefsDirty();
         return true;
       case CLOCK_FMT:

@@ -46,6 +46,7 @@ class UITask : public AbstractUITask {
   unsigned long _next_refresh, _auto_off;
   NodePrefs* _node_prefs;
   UIPrefs _ui_prefs;
+  bool _ui_prefs_dirty, _node_prefs_dirty;   // settings changed in RAM, not yet written to flash
   MsgStore _msgs;
   char _alert[80];
   unsigned long _alert_expiry;
@@ -88,6 +89,9 @@ class UITask : public AbstractUITask {
   char handleLongPress(char c);
 
   void setCurrScreen(UIScreen* c);
+  bool stackContains(UIScreen* s) const;
+  void flushSettingsIfLeft(bool was_in_settings);
+  void renderFrame();
   UIScreen* curr() const { return _stack_len > 0 ? _stack[_stack_len - 1] : NULL; }
   unsigned long autoOffMillis() const { return (unsigned long)_ui_prefs.screen_timeout_s * 1000UL; }
   void wakeForMessage();
@@ -100,6 +104,7 @@ public:
     ui_started_at = 0;
     _stack_len = 0;
     _msgcount = 0;
+    _ui_prefs_dirty = _node_prefs_dirty = false;
   }
   void begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs);
 
@@ -127,6 +132,10 @@ public:
   MsgStore& msgs() { return _msgs; }
   UIPrefs& uiPrefs() { return _ui_prefs; }
   void saveUIPrefs();
+  // settings screens only mark changes; they are written once when Settings is left
+  void markUIPrefsDirty() { _ui_prefs_dirty = true; }
+  void markNodePrefsDirty() { _node_prefs_dirty = true; }
+  void flushSettings(bool show_popup);
   NodePrefs* nodePrefs() { return _node_prefs; }
   void getChatName(const ChatKey& key, char* dest, int dest_size);
   int  getMaxComposeLen(const ChatKey& key) const;
@@ -145,9 +154,9 @@ public:
 #endif
   }
 
-  void toggleBuzzer();
+  void toggleBuzzer(bool from_settings = false);
   bool getGPSState();
-  void toggleGPS();
+  void toggleGPS(bool from_settings = false);
 
   // from AbstractUITask
   void msgRead(int msgcount) override;

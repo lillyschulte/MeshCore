@@ -1272,21 +1272,8 @@ void MyMesh::handleCmdFrame(size_t len) {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);
     }
   } else if (cmd_frame[0] == CMD_SEND_SELF_ADVERT) {
-    mesh::Packet* pkt;
-    if (_prefs.advert_loc_policy == ADVERT_LOC_NONE) {
-      pkt = createSelfAdvert(_prefs.node_name);
-    } else {
-      pkt = createSelfAdvert(_prefs.node_name, sensors.node_lat, sensors.node_lon);
-    }
-    if (pkt) {
-      if (len >= 2 && cmd_frame[1] == 1) { // optional param (1 = flood, 0 = zero hop)
-        unsigned long delay_millis = 0;
-        TransportKey default_scope;
-        memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
-        sendFloodScoped(default_scope, pkt, delay_millis);
-      } else {
-        sendZeroHop(pkt);
-      }
+    bool flood = len >= 2 && cmd_frame[1] == 1;   // optional param (1 = flood, 0 = zero hop)
+    if (advert(flood)) {
       writeOKFrame();
     } else {
       writeErrFrame(ERR_CODE_TABLE_FULL);
@@ -2270,7 +2257,7 @@ void MyMesh::loop() {
 #endif
 }
 
-bool MyMesh::advert() {
+bool MyMesh::advert(bool flood) {
   mesh::Packet* pkt;
   if (_prefs.advert_loc_policy == ADVERT_LOC_NONE) {
     pkt = createSelfAdvert(_prefs.node_name);
@@ -2278,7 +2265,13 @@ bool MyMesh::advert() {
     pkt = createSelfAdvert(_prefs.node_name, sensors.node_lat, sensors.node_lon);
   }
   if (pkt) {
-    sendZeroHop(pkt);
+    if (flood) {
+      TransportKey default_scope;
+      memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
+      sendFloodScoped(default_scope, pkt, 0);
+    } else {
+      sendZeroHop(pkt);
+    }
     return true;
   } else {
     return false;

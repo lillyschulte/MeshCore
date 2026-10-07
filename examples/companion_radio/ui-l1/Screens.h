@@ -407,6 +407,7 @@ class SettingsScreen : public ListScreen, public KeyboardListener {
     TIMEZONE,
     CLOCK_FMT,
     SCREEN_OFF,
+    BATTERY,
     CANNED,
     RADIO_INFO,
     Count
@@ -457,6 +458,10 @@ protected:
         if (p.screen_timeout_s >= 60) snprintf(value, value_size, "%dm", p.screen_timeout_s / 60);
         else snprintf(value, value_size, "%ds", p.screen_timeout_s);
         break;
+      case BATTERY:
+        strcpy(label, "Battery");
+        strcpy(value, p.batt_percent ? "%" : "Icon");
+        break;
       case CANNED:
         strcpy(label, "Quick replies");
         strcpy(value, ">");
@@ -477,11 +482,15 @@ protected:
         p.tz_offset_min += dir * 15;
         if (p.tz_offset_min < -12*60) p.tz_offset_min = 14*60;
         if (p.tz_offset_min > 14*60) p.tz_offset_min = -12*60;
-        _task->saveUIPrefs();
+        _task->markUIPrefsDirty();
         return true;
       case CLOCK_FMT:
         p.clock_24h = !p.clock_24h;
-        _task->saveUIPrefs();
+        _task->markUIPrefsDirty();
+        return true;
+      case BATTERY:
+        p.batt_percent = !p.batt_percent;
+        _task->markUIPrefsDirty();
         return true;
       case SCREEN_OFF: {
         int n;
@@ -490,17 +499,17 @@ protected:
         for (int k = 0; k < n; k++) if (t[k] == p.screen_timeout_s) cur = k;
         cur = (cur + n + dir) % n;
         p.screen_timeout_s = t[cur];
-        _task->saveUIPrefs();
+        _task->markUIPrefsDirty();
         return true;
       }
 #ifdef PIN_BUZZER
       case BUZZER:
-        _task->toggleBuzzer();
+        _task->toggleBuzzer(true);
         return true;
 #endif
 #if ENV_INCLUDE_GPS == 1
       case GPS:
-        _task->toggleGPS();
+        _task->toggleGPS(true);
         return true;
 #endif
     }
@@ -532,35 +541,149 @@ public:
     if (tag == NAME && text[0]) {
       NodePrefs* np = _task->nodePrefs();
       StrHelper::strncpy(np->node_name, text, sizeof(np->node_name));
-      the_mesh.savePrefs();
-      _task->showAlert("Saved, send advert", 1200);
+      _task->markNodePrefsDirty();
     }
   }
 };
 
 /* ------------------------------------------------------- Quick reply editor */
 
+#define CANNED_TAG_ADD   100   // keyboard tag for a new reply (edits use the slot index)
+
 class CannedEditScreen : public ListScreen, public KeyboardListener {
+  enum PopupItem { POPUP_EDIT, POPUP_DELETE, POPUP_CANCEL, POPUP_COUNT };
+  bool _popup;
+  int _popup_sel;
+
+  int numReplies() {
+    int n = 0;
+    while (n < UI_CANNED_COUNT && _task->uiPrefs().canned[n][0]) n++;
+    return n;
+  }
+
+  // keep replies packed at the front, so "empty" only ever means "end of list"
+  void compact() {
+    UIPrefs& p = _task->uiPrefs();
+    int dst = 0;
+    for (int i = 0; i < UI_CANNED_COUNT; i++) {
+      if (p.canned[i][0]) {
+        if (dst != i) memcpy(p.canned[dst], p.canned[i], UI_CANNED_LEN);
+        dst++;
+      }
+    }
+    for (; dst < UI_CANNED_COUNT; dst++) p.canned[dst][0] = 0;
+  }
+
+  void deleteReply(int i) {
+    _task->uiPrefs().canned[i][0] = 0;
+    compact();
+    _task->markUIPrefsDirty();
+    _task->showAlert("Deleted", 700);
+  }
+
 protected:
   const char* getTitle() override { return "Quick replies"; }
-  int getCount() override { return UI_CANNED_COUNT; }
+  int getCount() override { return numReplies() + 1; }   // + "Add new"
 
   void getItem(int i, char* label, int label_size, char* value, int value_size) override {
-    const char* s = _task->uiPrefs().canned[i];
-    snprintf(label, label_size, "%d. %s", i + 1, s[0] ? s : "(empty)");
+    int n = numReplies();
+    if (i < n) {
+      StrHelper::strncpy(label, _task->uiPrefs().canned[i], label_size);
+    } else {
+      strcpy(label, "+ Add new");
+      if (n >= UI_CANNED_COUNT) strcpy(value, "(full)");
+    }
   }
 
   void onEnter(int i) override {
-    _task->openKeyboard("Quick reply", _task->uiPrefs().canned[i], UI_CANNED_LEN - 1, this, i);
+    int n = numReplies();
+    if (i < n) {
+      _popup = true;
+      _popup_sel = POPUP_EDIT;
+    } else if (n >= UI_CANNED_COUNT) {
+      _task->showAlert("Max 8 replies", 900);
+    } else {
+      _task->openKeyboard("New quick reply", "", UI_CANNED_LEN - 1, this, CANNED_TAG_ADD);
+    }
   }
 
 public:
-  CannedEditScreen(UITask* task) : ListScreen(task) { }
+  CannedEditScreen(UITask* task) : ListScreen(task), _popup(false), _popup_sel(0) { }
+
+  void open() {
+    compact();   // tidy up files from older versions that had gaps
+    _popup = false;
+    reset();
+  }
+
+  int render(DisplayDriver& display) override {
+    int next = ListScreen::render(display);
+    if (!_popup) return next;
+
+    // Edit / Delete / Cancel popup over the list
+    static const char* const labels[POPUP_COUNT] = { "Edit", "Delete", "Cancel" };
+    const int w = 60, row_h = 10;
+    const int h = POPUP_COUNT * row_h + 4;
+    int x = (display.width() - w) / 2;
+    int y = (display.height() - h) / 2 + 4;
+    display.setColor(UIColor::window_bkg);
+    display.fillRect(x - 1, y - 1, w + 2, h + 2);
+    display.setColor(UIColor::primary_txt);
+    display.drawRect(x, y, w, h);
+    for (int k = 0; k < POPUP_COUNT; k++) {
+      int ry = y + 2 + k * row_h;
+      if (k == _popup_sel) {
+        display.setColor(UIColor::primary_txt);
+        display.fillRect(x + 2, ry, w - 4, row_h);
+        display.setColor(UIColor::window_bkg);
+      } else {
+        display.setColor(UIColor::primary_txt);
+      }
+      display.drawTextCentered(display.width() / 2, ry + 1, labels[k]);
+    }
+    display.setColor(UIColor::primary_txt);
+    return next;
+  }
+
+  bool handleInput(char c) override {
+    if (!_popup) return ListScreen::handleInput(c);
+
+    switch (c) {
+      case KEY_UP:
+        _popup_sel = (_popup_sel + POPUP_COUNT - 1) % POPUP_COUNT;
+        return true;
+      case KEY_DOWN:
+        _popup_sel = (_popup_sel + 1) % POPUP_COUNT;
+        return true;
+      case KEY_ENTER:
+      case KEY_RIGHT:
+        _popup = false;
+        if (_popup_sel == POPUP_EDIT) {
+          _task->openKeyboard("Quick reply", _task->uiPrefs().canned[_sel], UI_CANNED_LEN - 1, this, _sel);
+        } else if (_popup_sel == POPUP_DELETE) {
+          deleteReply(_sel);
+        }
+        return true;
+      case KEY_LEFT:
+      case KEY_CANCEL:
+        _popup = false;
+        return true;
+    }
+    return true;   // popup is modal
+  }
 
   void onKeyboardDone(int tag, const char* text) override {
-    if (tag >= 0 && tag < UI_CANNED_COUNT) {
-      StrHelper::strncpy(_task->uiPrefs().canned[tag], text, UI_CANNED_LEN);   // empty = removed
-      _task->saveUIPrefs();
+    UIPrefs& p = _task->uiPrefs();
+    if (tag == CANNED_TAG_ADD) {
+      int n = numReplies();
+      if (text[0] && n < UI_CANNED_COUNT) {
+        StrHelper::strncpy(p.canned[n], text, UI_CANNED_LEN);
+        _sel = n;
+      }
+    } else if (tag >= 0 && tag < UI_CANNED_COUNT) {
+      StrHelper::strncpy(p.canned[tag], text, UI_CANNED_LEN);   // clearing the text deletes it
+      compact();
     }
+    _task->markUIPrefsDirty();
   }
 };

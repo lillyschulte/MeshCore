@@ -118,6 +118,7 @@ class HomeScreen : public UIScreen {
   NodePrefs* _node_prefs;
   uint8_t _page;
   int _msg_sel;   // messages page: 0 = newest received message
+  bool _advert_flood;   // advert page: up/down switches zero-hop <-> flood
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
   // n-th newest received (incoming) message, and the total count
@@ -206,10 +207,17 @@ class HomeScreen : public UIScreen {
     int iconX = display.width() - iconWidth - 5;
     int iconY = 0;
     display.setColor(UIColor::title_txt);
-    display.drawRect(iconX, iconY, iconWidth, iconHeight);
-    display.fillRect(iconX + iconWidth, iconY + (iconHeight / 4), 3, iconHeight / 2);
-    int fillWidth = (batteryPercentage * (iconWidth - 4)) / 100;
-    display.fillRect(iconX + 2, iconY + 2, fillWidth, iconHeight - 4);
+    if (_task->uiPrefs().batt_percent) {
+      char pct[8];
+      sprintf(pct, "%d%%", batteryPercentage);
+      display.setTextSize(1);
+      display.drawTextRightAlign(display.width() - 1, 2, pct);
+    } else {
+      display.drawRect(iconX, iconY, iconWidth, iconHeight);
+      display.fillRect(iconX + iconWidth, iconY + (iconHeight / 4), 3, iconHeight / 2);
+      int fillWidth = (batteryPercentage * (iconWidth - 4)) / 100;
+      display.fillRect(iconX + 2, iconY + 2, fillWidth, iconHeight - 4);
+    }
 
 #ifdef PIN_BUZZER
     if (_task->isBuzzerQuiet()) {
@@ -271,7 +279,7 @@ class HomeScreen : public UIScreen {
 
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, NodePrefs* node_prefs)
-     : _task(task), _rtc(rtc), _node_prefs(node_prefs), _page(0), _msg_sel(0) { }
+     : _task(task), _rtc(rtc), _node_prefs(node_prefs), _page(0), _msg_sel(0), _advert_flood(false) { }
 
   void showNewestMessage() {
     _page = HomePage::MESSAGES;
@@ -311,7 +319,11 @@ public:
       display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - 32) / 2, 18, advert_icon, 32, 32);
       display.setColor(UIColor::secondary_txt);
-      display.drawTextCentered(display.width() / 2, 64 - 11, "advert: press Enter");
+      display.setTextSize(1);
+      display.drawTextLeftAlign(90, 24, "\x18\x19");   // up/down arrows: switch mode
+      display.drawTextLeftAlign(90, 34, _advert_flood ? "flood" : "0-hop");
+      display.drawTextCentered(display.width() / 2, 64 - 11,
+                               _advert_flood ? "flood: press Enter" : "0-hop: press Enter");
     } else if (_page == HomePage::RECENT) {
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE - 1);
       display.setColor(UIColor::primary_txt);
@@ -409,10 +421,17 @@ public:
         return true;
       }
     }
-    if (c == KEY_ENTER && _page == HomePage::ADVERT) {
-      _task->notify(UIEventType::ack);
-      _task->showAlert(the_mesh.advert() ? "Advert sent!" : "Advert failed..", 1000);
-      return true;
+    if (_page == HomePage::ADVERT) {
+      if (c == KEY_UP || c == KEY_DOWN) {
+        _advert_flood = !_advert_flood;
+        return true;
+      }
+      if (c == KEY_ENTER) {
+        _task->notify(UIEventType::ack);
+        bool ok = the_mesh.advert(_advert_flood);
+        _task->showAlert(!ok ? "Advert failed.." : (_advert_flood ? "Flood advert sent!" : "Advert sent!"), 1000);
+        return true;
+      }
     }
     if (c == KEY_ENTER) {
       _task->openMenu();
@@ -492,9 +511,38 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 /* navigation */
 
 void UITask::setCurrScreen(UIScreen* c) {
+  bool was_in_settings = stackContains(settings);
   _stack[0] = c;
   _stack_len = 1;
   _next_refresh = 100;
+  flushSettingsIfLeft(was_in_settings);
+}
+
+bool UITask::stackContains(UIScreen* s) const {
+  for (int i = 0; i < _stack_len; i++) {
+    if (_stack[i] == s) return true;
+  }
+  return false;
+}
+
+void UITask::flushSettingsIfLeft(bool was_in_settings) {
+  if (was_in_settings && !stackContains(settings)) flushSettings(true);
+}
+
+// write settings changed while in the Settings screens, in one go
+void UITask::flushSettings(bool show_popup) {
+  if (!_ui_prefs_dirty && !_node_prefs_dirty) return;
+
+  show_popup = show_popup && _display != NULL && _display->isOn();
+  if (show_popup) {
+    showAlert("Saving...", 2000);
+    renderFrame();   // show it now, the writes below block
+  }
+  if (_ui_prefs_dirty) saveUIPrefs();
+  if (_node_prefs_dirty) the_mesh.savePrefs();
+  _ui_prefs_dirty = _node_prefs_dirty = false;
+  if (show_popup) showAlert("Saved", 600);
+  _next_refresh = 0;
 }
 
 void UITask::gotoHomeScreen() { setCurrScreen(home); }
@@ -511,7 +559,9 @@ void UITask::push(UIScreen* s) {
 
 void UITask::pop() {
   if (_stack_len > 1) {
+    bool was_in_settings = stackContains(settings);
     _stack_len--;
+    flushSettingsIfLeft(was_in_settings);
   } else {
     setCurrScreen(home);
   }
@@ -539,7 +589,7 @@ void UITask::openSettings() {
   push(settings);
 }
 void UITask::openCannedEdit() {
-  ((CannedEditScreen *) canned_edit)->reset();
+  ((CannedEditScreen *) canned_edit)->open();
   push(canned_edit);
 }
 void UITask::openChat(const ChatKey& key) {
@@ -772,6 +822,7 @@ void UITask::userLedHandler() {
   hardware-agnostic pre-shutdown activity should be done here
 */
 void UITask::shutdown(bool restart){
+  flushSettings(false);
 
   #ifdef PIN_BUZZER
   buzzer.shutdown();
@@ -882,22 +933,7 @@ void UITask::loop() {
 
   if (_display != NULL && _display->isOn()) {
     if (millis() >= _next_refresh && curr()) {
-      _display->startFrame();
-      int delay_millis = curr()->render(*_display);
-      if (millis() < _alert_expiry) {  // render alert popup
-        _display->setTextSize(1);
-        int y = _display->height() / 3;
-        int p = _display->height() / 32;
-        _display->setColor(UIColor::popup_bkg);
-        _display->fillRect(p, y, _display->width() - p*2, y);
-        _display->setColor(UIColor::popup_txt);  // draw box border
-        _display->drawRect(p, y, _display->width() - p*2, y);
-        _display->drawTextCentered(_display->width() / 2, y + p*3, _alert);
-        _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
-      } else {
-        _next_refresh = millis() + delay_millis;
-      }
-      _display->endFrame();
+      renderFrame();
     }
 #ifdef KEEP_DISPLAY_ON_USB
     if (board.isExternalPowered()) {
@@ -905,6 +941,7 @@ void UITask::loop() {
     }
 #endif
     if (millis() > _auto_off) {
+      flushSettings(false);   // don't leave unsaved settings behind a dark screen
       _display->turnOff();
     }
   }
@@ -933,6 +970,25 @@ void UITask::loop() {
     next_batt_chck = millis() + 8000;
   }
 #endif
+}
+
+void UITask::renderFrame() {
+  _display->startFrame();
+  int delay_millis = curr()->render(*_display);
+  if (millis() < _alert_expiry) {  // render alert popup
+    _display->setTextSize(1);
+    int y = _display->height() / 3;
+    int p = _display->height() / 32;
+    _display->setColor(UIColor::popup_bkg);
+    _display->fillRect(p, y, _display->width() - p*2, y);
+    _display->setColor(UIColor::popup_txt);  // draw box border
+    _display->drawRect(p, y, _display->width() - p*2, y);
+    _display->drawTextCentered(_display->width() / 2, y + p*3, _alert);
+    _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
+  } else {
+    _next_refresh = millis() + delay_millis;
+  }
+  _display->endFrame();
 }
 
 char UITask::checkDisplayOn(char c) {
@@ -969,7 +1025,7 @@ bool UITask::getGPSState() {
   return false;
 }
 
-void UITask::toggleGPS() {
+void UITask::toggleGPS(bool from_settings) {
     if (_sensors != NULL) {
     // toggle GPS on/off
     int num = _sensors->getNumSettings();
@@ -984,8 +1040,12 @@ void UITask::toggleGPS() {
           _node_prefs->gps_enabled = 1;
           notify(UIEventType::ack);
         }
-        the_mesh.savePrefs();
-        showAlert(_node_prefs->gps_enabled ? "GPS: Enabled" : "GPS: Disabled", 800);
+        if (from_settings) {
+          markNodePrefsDirty();   // saved when leaving Settings
+        } else {
+          the_mesh.savePrefs();
+          showAlert(_node_prefs->gps_enabled ? "GPS: Enabled" : "GPS: Disabled", 800);
+        }
         _next_refresh = 0;
         break;
       }
@@ -993,7 +1053,7 @@ void UITask::toggleGPS() {
   }
 }
 
-void UITask::toggleBuzzer() {
+void UITask::toggleBuzzer(bool from_settings) {
     // Toggle buzzer quiet mode
   #ifdef PIN_BUZZER
     if (buzzer.isQuiet()) {
@@ -1003,8 +1063,12 @@ void UITask::toggleBuzzer() {
       buzzer.quiet(true);
     }
     _node_prefs->buzzer_quiet = buzzer.isQuiet();
-    the_mesh.savePrefs();
-    showAlert(buzzer.isQuiet() ? "Buzzer: OFF" : "Buzzer: ON", 800);
+    if (from_settings) {
+      markNodePrefsDirty();   // saved when leaving Settings
+    } else {
+      the_mesh.savePrefs();
+      showAlert(buzzer.isQuiet() ? "Buzzer: OFF" : "Buzzer: ON", 800);
+    }
     _next_refresh = 0;  // trigger refresh
   #endif
 }

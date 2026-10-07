@@ -15,7 +15,7 @@ struct UIPrefs {
   uint16_t magic;
   int16_t  tz_offset_min;     // local time = UTC + offset
   uint8_t  clock_24h;
-  uint8_t  reserved;
+  uint8_t  batt_percent;      // show battery as % instead of an icon (was reserved, old files read 0)
   uint16_t screen_timeout_s;
   char     canned[UI_CANNED_COUNT][UI_CANNED_LEN];
 

@@ -5,6 +5,7 @@
 #include <helpers/ui/UIScreen.h>
 #include <helpers/SensorManager.h>
 #include <helpers/MultiSerialInterface.h>
+#include <helpers/ContactInfo.h>
 #include <Arduino.h>
 
 #ifdef PIN_BUZZER
@@ -43,4 +44,9 @@ public:
   virtual void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) = 0;
   virtual void notify(UIEventType t = UIEventType::none) = 0;
   virtual void loop() = 0;
+
+  // optional richer hooks, for UIs that keep their own message history
+  virtual void onContactMsg(const ContactInfo& from, uint32_t sender_timestamp, const char* text) { }
+  virtual void onChannelMsg(uint8_t channel_idx, uint32_t timestamp, const char* text) { }
+  virtual void onMsgAck(uint32_t ack) { }
 };

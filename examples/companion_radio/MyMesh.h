@@ -102,6 +102,10 @@ public:
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
 
+  // send helpers for on-device UIs (app path uses handleCmdFrame)
+  int  uiSendDirect(ContactInfo& recipient, const char* text, uint32_t& expected_ack, uint32_t& est_timeout);
+  bool uiSendChannel(uint8_t channel_idx, const char* text);
+
 protected:
   float getAirtimeBudgetFactor() const override;
   int getInterferenceThreshold() const override;
@@ -192,6 +196,7 @@ private:
   void writeContactRespFrame(uint8_t code, const ContactInfo &contact);
   void updateContactFromFrame(ContactInfo &contact, uint32_t& last_mod, const uint8_t *frame, int len);
   void addToOfflineQueue(const uint8_t frame[], int len);
+  void addExpectedAck(uint32_t ack, ContactInfo* contact);
   int getFromOfflineQueue(uint8_t frame[]);
   int getBlobByKey(const uint8_t key[], int key_len, uint8_t dest_buf[]) override { 
     return _store->getBlobByKey(key, key_len, dest_buf);

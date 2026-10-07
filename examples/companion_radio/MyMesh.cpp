@@ -420,6 +420,9 @@ ContactInfo*  MyMesh::processAck(const uint8_t *data) {
       uint32_t trip_time = _ms->getMillis() - expected_ack_table[i].msg_sent;
       memcpy(&out_frame[5], &trip_time, 4);
       _serial->writeFrame(out_frame, 9);
+#ifdef DISPLAY_CLASS
+      if (_ui) _ui->onMsgAck(expected_ack_table[i].ack);
+#endif
 
       // NOTE: the same ACK can be received multiple times!
       expected_ack_table[i].ack = 0; // clear expected hash, now that we have received ACK
@@ -427,6 +430,28 @@ ContactInfo*  MyMesh::processAck(const uint8_t *data) {
     }
   }
   return checkConnectionsAck(data);
+}
+
+void MyMesh::addExpectedAck(uint32_t ack, ContactInfo* contact) {
+  expected_ack_table[next_ack_idx].msg_sent = _ms->getMillis(); // add to circular table
+  expected_ack_table[next_ack_idx].ack = ack;
+  expected_ack_table[next_ack_idx].contact = contact;
+  next_ack_idx = (next_ack_idx + 1) % EXPECTED_ACK_TABLE_SIZE;
+}
+
+int MyMesh::uiSendDirect(ContactInfo& recipient, const char* text, uint32_t& expected_ack, uint32_t& est_timeout) {
+  uint32_t msg_timestamp = getRTCClock()->getCurrentTimeUnique();
+  expected_ack = 0;
+  int result = sendMessage(recipient, msg_timestamp, 0, text, expected_ack, est_timeout);
+  if (result != MSG_SEND_FAILED && expected_ack) addExpectedAck(expected_ack, &recipient);
+  return result;
+}
+
+bool MyMesh::uiSendChannel(uint8_t channel_idx, const char* text) {
+  ChannelDetails channel;
+  if (!getChannel(channel_idx, channel)) return false;
+  uint32_t msg_timestamp = getRTCClock()->getCurrentTimeUnique();
+  return sendGroupMessage(msg_timestamp, channel.channel, _prefs.node_name, text, strlen(text));
 }
 
 void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packet *pkt,
@@ -468,6 +493,7 @@ void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packe
   // we only want to show text messages on display, not cli data
   bool should_display = txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN;
   if (should_display && _ui) {
+    _ui->onContactMsg(from, sender_timestamp, text);
     _ui->newMsg(path_len, from.name, text, offline_queue_len);
     if (!_serial->isConnected()) {
       _ui->notify(UIEventType::contactMessage);
@@ -585,7 +611,10 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
   if (getChannel(channel_idx, channel_details)) {
     channel_name = channel_details.name;
   }
-  if (_ui) _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+  if (_ui) {
+    _ui->onChannelMsg(channel_idx, timestamp, text);
+    _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+  }
 #endif
 }
 
@@ -1110,12 +1139,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       if (result == MSG_SEND_FAILED) {
         writeErrFrame(ERR_CODE_TABLE_FULL);
       } else {
-        if (expected_ack) {
-          expected_ack_table[next_ack_idx].msg_sent = _ms->getMillis(); // add to circular table
-          expected_ack_table[next_ack_idx].ack = expected_ack;
-          expected_ack_table[next_ack_idx].contact = recipient;
-          next_ack_idx = (next_ack_idx + 1) % EXPECTED_ACK_TABLE_SIZE;
-        }
+        if (expected_ack) addExpectedAck(expected_ack, recipient);
 
         out_frame[0] = RESP_CODE_SENT;
         out_frame[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;

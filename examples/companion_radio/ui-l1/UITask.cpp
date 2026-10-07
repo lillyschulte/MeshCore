@@ -103,11 +103,13 @@ public:
 class HomeScreen : public UIScreen {
   enum HomePage {
     CLOCK,
+    MESSAGES,
     RECENT,
     RADIO,
 #if ENV_INCLUDE_GPS == 1
     GPS,
 #endif
+    ADVERT,
     Count    // keep as last
   };
 
@@ -115,7 +117,76 @@ class HomeScreen : public UIScreen {
   mesh::RTCClock* _rtc;
   NodePrefs* _node_prefs;
   uint8_t _page;
+  int _msg_sel;   // messages page: 0 = newest received message
   AdvertPath recent[UI_RECENT_LIST_SIZE];
+
+  // n-th newest received (incoming) message, and the total count
+  UIMsg* getReceived(int n, int& total) {
+    MsgStore& store = _task->msgs();
+    UIMsg* found = NULL;
+    total = 0;
+    for (int i = store.count() - 1; i >= 0; i--) {
+      UIMsg* m = store.get(i);
+      if (m->flags & MSG_FLAG_OUT) continue;
+      if (total == n) found = m;
+      total++;
+    }
+    return found;
+  }
+
+  void renderMessagesPage(DisplayDriver& display) {
+    int total;
+    if (_msg_sel < 0) _msg_sel = 0;
+    UIMsg* m = getReceived(_msg_sel, total);
+    if (m == NULL && total > 0) {
+      _msg_sel = total - 1;
+      m = getReceived(_msg_sel, total);
+    }
+    display.setTextSize(1);
+    display.setColor(UIColor::primary_txt);
+    if (m == NULL) {
+      display.drawTextCentered(display.width() / 2, 28, "No messages yet");
+      return;
+    }
+    m->flags &= ~MSG_FLAG_UNREAD;   // it's on screen now
+
+    // header: conversation name, position and age
+    char tmp[24], age[8] = "";
+    if (_task->isClockSet()) formatAge(age, _rtc->getCurrentTime() - m->timestamp);
+    snprintf(tmp, sizeof(tmp), "%d/%d %s", _msg_sel + 1, total, age);
+    int right_w = display.getTextWidth(tmp);
+    display.setCursor(display.width() - right_w, 18);
+    display.print(tmp);
+
+    char name[32], filtered[48];
+    _task->getChatName(m->key, name, sizeof(name));
+    display.translateUTF8ToBlocks(filtered, name, sizeof(filtered));
+    display.drawTextEllipsized(0, 18, display.width() - right_w - 4, filtered);
+    display.fillRect(0, 27, display.width(), 1);
+
+    // message body, wrapped; "..." when it does not fit (Enter -> Open chat shows all)
+    char body[UI_MSG_TEXT_LEN + 1];
+    display.translateUTF8ToBlocks(body, m->text, sizeof(body));
+    const int max_lines = 4;
+    int line = 0;
+    int total_lines = wrapText(body, 21, [&](const char* s, int len) {
+      if (line < max_lines) {
+        char seg[22];
+        memcpy(seg, s, len);
+        seg[len] = 0;
+        display.setCursor(0, 29 + line * 9);
+        display.print(seg);
+      }
+      line++;
+    });
+    if (total_lines > max_lines) {
+      display.setColor(UIColor::window_bkg);
+      display.fillRect(display.width() - 18, 29 + (max_lines - 1) * 9, 18, 8);
+      display.setColor(UIColor::primary_txt);
+      display.setCursor(display.width() - 18, 29 + (max_lines - 1) * 9);
+      display.print("...");
+    }
+  }
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
 #ifndef BATT_MIN_MILLIVOLTS
@@ -200,7 +271,12 @@ class HomeScreen : public UIScreen {
 
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, NodePrefs* node_prefs)
-     : _task(task), _rtc(rtc), _node_prefs(node_prefs), _page(0) { }
+     : _task(task), _rtc(rtc), _node_prefs(node_prefs), _page(0), _msg_sel(0) { }
+
+  void showNewestMessage() {
+    _page = HomePage::MESSAGES;
+    _msg_sel = 0;
+  }
 
   int render(DisplayDriver& display) override {
     char tmp[80];
@@ -228,11 +304,23 @@ public:
     if (_page == HomePage::CLOCK) {
       renderClockPage(display);
       return 1000;   // keep the clock (and its colon) current
+    } else if (_page == HomePage::MESSAGES) {
+      renderMessagesPage(display);
+      return 5000;
+    } else if (_page == HomePage::ADVERT) {
+      display.setColor(UIColor::corp_blue);
+      display.drawXbm((display.width() - 32) / 2, 18, advert_icon, 32, 32);
+      display.setColor(UIColor::secondary_txt);
+      display.drawTextCentered(display.width() / 2, 64 - 11, "advert: press Enter");
     } else if (_page == HomePage::RECENT) {
-      the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
+      the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE - 1);
       display.setColor(UIColor::primary_txt);
-      int y = 20;
-      for (int i = 0; i < UI_RECENT_LIST_SIZE; i++, y += 11) {
+      display.drawTextLeftAlign(0, 18, "Recently heard:");
+      if (recent[0].name[0] == 0) {
+        display.drawTextCentered(display.width() / 2, 36, "nothing yet");
+      }
+      int y = 29;
+      for (int i = 0; i < UI_RECENT_LIST_SIZE - 1; i++, y += 11) {
         auto a = &recent[i];
         if (a->name[0] == 0) continue;  // empty slot
         formatAge(tmp, _rtc->getCurrentTime() - a->recv_timestamp);
@@ -305,12 +393,29 @@ public:
       _page = (_page + 1) % HomePage::Count;
       return true;
     }
-    if (c == KEY_ENTER) {
-      _task->openMenu();
+    if (_page == HomePage::MESSAGES) {
+      int total;
+      UIMsg* m = getReceived(_msg_sel, total);
+      if (c == KEY_DOWN) {   // older
+        if (_msg_sel < total - 1) _msg_sel++;
+        return true;
+      }
+      if (c == KEY_UP) {     // newer
+        if (_msg_sel > 0) _msg_sel--;
+        return true;
+      }
+      if (c == KEY_ENTER && m) {
+        _task->openReply(m->key, true);
+        return true;
+      }
+    }
+    if (c == KEY_ENTER && _page == HomePage::ADVERT) {
+      _task->notify(UIEventType::ack);
+      _task->showAlert(the_mesh.advert() ? "Advert sent!" : "Advert failed..", 1000);
       return true;
     }
-    if (c == KEY_UP || c == KEY_DOWN) {
-      _task->openThreads();
+    if (c == KEY_ENTER) {
+      _task->openMenu();
       return true;
     }
     return false;
@@ -448,8 +553,8 @@ void UITask::openChat(const ChatKey& key) {
   ((ChatScreen *) chat)->open(key);
   push(chat);
 }
-void UITask::openReply(const ChatKey& key) {
-  ((ReplyScreen *) reply)->open(key);
+void UITask::openReply(const ChatKey& key, bool offer_open_chat) {
+  ((ReplyScreen *) reply)->open(key, offer_open_chat);
   push(reply);
 }
 void UITask::openKeyboard(const char* title, const char* initial, int max_len, KeyboardListener* listener, int tag) {
@@ -611,7 +716,7 @@ void UITask::onIncomingMsg(const ChatKey& key, const char* from_name) {
     ((ChatScreen *) chat)->scrollToBottom();   // already looking at this conversation
   } else if (c == home || c == splash || display_was_off) {
     gotoHomeScreen();
-    openChat(key);    // show it right away, like a pager
+    ((HomeScreen *) home)->showNewestMessage();   // show it right away, like a pager
   } else {
     char alert[48];
     snprintf(alert, sizeof(alert), "Msg: %s", from_name);

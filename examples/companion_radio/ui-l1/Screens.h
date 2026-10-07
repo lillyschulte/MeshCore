@@ -338,6 +338,7 @@ public:
 
 class ReplyScreen : public ListScreen, public KeyboardListener {
   ChatKey _key;
+  bool _offer_open_chat;   // when opened from the home messages page
   int _canned_idx[UI_CANNED_COUNT];
   int _num_canned;
 
@@ -347,41 +348,47 @@ class ReplyScreen : public ListScreen, public KeyboardListener {
       if (_task->uiPrefs().canned[i][0]) _canned_idx[_num_canned++] = i;
     }
   }
+  int fixedItems() const { return _offer_open_chat ? 2 : 1; }   // [Open chat], Write...
 
 protected:
   const char* getTitle() override { return "Reply"; }
-  int getCount() override { return 1 + _num_canned; }
+  int getCount() override { return fixedItems() + _num_canned; }
 
   void getItem(int i, char* label, int label_size, char* value, int value_size) override {
-    if (i == 0) {
+    if (_offer_open_chat && i == 0) {
+      strcpy(label, "Open chat");
+    } else if (i == fixedItems() - 1) {
       strcpy(label, "Write...");
     } else {
-      StrHelper::strncpy(label, _task->uiPrefs().canned[_canned_idx[i - 1]], label_size);
+      StrHelper::strncpy(label, _task->uiPrefs().canned[_canned_idx[i - fixedItems()]], label_size);
     }
   }
 
   void onEnter(int i) override {
-    if (i == 0) {
-      _task->openKeyboard("Message", "", _task->getMaxComposeLen(_key), this, 0);
+    ChatKey key = _key;
+    if (_offer_open_chat && i == 0) {
+      _task->openChat(key);
+    } else if (i == fixedItems() - 1) {
+      _task->openKeyboard("Message", "", _task->getMaxComposeLen(key), this, 0);
     } else {
-      ChatKey key = _key;
-      _task->pop();   // back to the chat
-      _task->sendText(key, _task->uiPrefs().canned[_canned_idx[i - 1]]);
+      _task->pop();   // back to where the reply was started
+      _task->sendText(key, _task->uiPrefs().canned[_canned_idx[i - fixedItems()]]);
     }
   }
 
 public:
-  ReplyScreen(UITask* task) : ListScreen(task), _num_canned(0) { }
+  ReplyScreen(UITask* task) : ListScreen(task), _offer_open_chat(false), _num_canned(0) { }
 
-  void open(const ChatKey& key) {
+  void open(const ChatKey& key, bool offer_open_chat) {
     _key = key;
+    _offer_open_chat = offer_open_chat;
     refresh();
     reset();
   }
 
   void onKeyboardDone(int tag, const char* text) override {
     ChatKey key = _key;
-    _task->pop();   // reply screen -> chat
+    _task->pop();   // reply screen -> where the reply was started
     if (text[0]) _task->sendText(key, text);
   }
 };

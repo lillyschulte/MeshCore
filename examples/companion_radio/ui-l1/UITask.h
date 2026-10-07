@@ -114,7 +114,7 @@ public:
   void openSettings();
   void openCannedEdit();
   void openChat(const ChatKey& key);
-  void openReply(const ChatKey& key);
+  void openReply(const ChatKey& key, bool offer_open_chat = false);
   void openKeyboard(const char* title, const char* initial, int max_len, KeyboardListener* listener, int tag);
   void requestRefresh() { _next_refresh = 0; }
 

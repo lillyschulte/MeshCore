@@ -24,6 +24,7 @@ struct UIPrefs {
   char     canned[UI_CANNED_COUNT][UI_CANNED_LEN];
   // --- fields below were added later; older (shorter) files load with them as 0
   uint8_t  dst_rule;          // DST_RULE_*
+  uint8_t  splash_secs;       // boot splash duration, 0 = skip
 
   void setDefaults() {
     static const char* defaults[UI_CANNED_COUNT] = {
@@ -34,6 +35,7 @@ struct UIPrefs {
     tz_offset_min = 0;
     clock_24h = 1;
     screen_timeout_s = 30;
+    splash_secs = 3;
     for (int i = 0; i < UI_CANNED_COUNT; i++) {
       StrHelper::strncpy(canned[i], defaults[i], UI_CANNED_LEN);
     }
@@ -57,6 +59,7 @@ struct UIPrefs {
       *this = tmp;
       for (int i = 0; i < UI_CANNED_COUNT; i++) canned[i][UI_CANNED_LEN - 1] = 0;  // ensure terminated
       if (screen_timeout_s < 5) screen_timeout_s = 30;
+      if (n < (int) (offsetof(UIPrefs, splash_secs) + 1)) splash_secs = 3;   // file older than this field
     }
   }
 

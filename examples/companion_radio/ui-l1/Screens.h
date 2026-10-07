@@ -15,7 +15,15 @@
 
 class MainMenuScreen : public ListScreen {
   enum Item { MESSAGES, CONTACTS, CHANNELS, ADVERT, SETTINGS, BLUETOOTH, SHUTDOWN, Count };
+  enum AdvertChoice { ADVERT_ZERO_HOP, ADVERT_FLOOD, ADVERT_CANCEL };
   bool _shutdown_init;
+  PopupMenu _popup;
+
+  void sendAdvert(bool flood) {
+    _task->notify(UIEventType::ack);
+    bool ok = the_mesh.advert(flood);
+    _task->showAlert(!ok ? "Advert failed.." : (flood ? "Flood advert sent!" : "Advert sent!"), 1000);
+  }
 
 protected:
   const char* getTitle() override { return "Menu"; }
@@ -46,10 +54,11 @@ protected:
       case MESSAGES: _task->openThreads(); break;
       case CONTACTS: _task->openContacts(); break;
       case CHANNELS: _task->openChannels(); break;
-      case ADVERT:
-        _task->notify(UIEventType::ack);
-        _task->showAlert(the_mesh.advert() ? "Advert sent!" : "Advert failed..", 1000);
+      case ADVERT: {
+        static const char* const choices[] = { "Zero-hop", "Flood", "Cancel" };
+        _popup.show(choices, 3);
         break;
+      }
       case SETTINGS: _task->openSettings(); break;
       case BLUETOOTH:
         if (_task->isBluetoothEnabled()) {
@@ -66,6 +75,25 @@ protected:
 
 public:
   MainMenuScreen(UITask* task) : ListScreen(task), _shutdown_init(false) { }
+
+  void reset() {
+    ListScreen::reset();
+    _popup.close();
+  }
+
+  int render(DisplayDriver& display) override {
+    int next = ListScreen::render(display);
+    _popup.render(display);
+    return next;
+  }
+
+  bool handleInput(char c) override {
+    if (!_popup.isOpen()) return ListScreen::handleInput(c);
+    int choice = _popup.handleInput(c);
+    if (choice == ADVERT_ZERO_HOP) sendAdvert(false);
+    else if (choice == ADVERT_FLOOD) sendAdvert(true);
+    return true;
+  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {
@@ -408,11 +436,18 @@ class SettingsScreen : public ListScreen, public KeyboardListener {
     SUMMER_TIME,
     CLOCK_FMT,
     SCREEN_OFF,
+    SPLASH,
     BATTERY,
     CANNED,
     RADIO_INFO,
     Count
   };
+  static const uint8_t* splashDurations(int& n) {
+    static const uint8_t t[] = { 0, 1, 2, 3, 5, 10 };
+    n = sizeof(t) / sizeof(t[0]);
+    return t;
+  }
+
   static const uint16_t* timeouts(int& n) {
     static const uint16_t t[] = { 10, 15, 30, 60, 120, 300 };
     n = sizeof(t) / sizeof(t[0]);
@@ -463,6 +498,11 @@ protected:
         if (p.screen_timeout_s >= 60) snprintf(value, value_size, "%dm", p.screen_timeout_s / 60);
         else snprintf(value, value_size, "%ds", p.screen_timeout_s);
         break;
+      case SPLASH:
+        strcpy(label, "Boot splash");
+        if (p.splash_secs == 0) strcpy(value, "Off");
+        else snprintf(value, value_size, "%ds", p.splash_secs);
+        break;
       case BATTERY:
         strcpy(label, "Battery");
         strcpy(value, p.batt_percent ? "%" : "Icon");
@@ -497,6 +537,16 @@ protected:
         p.clock_24h = !p.clock_24h;
         _task->markUIPrefsDirty();
         return true;
+      case SPLASH: {
+        int n;
+        const uint8_t* t = splashDurations(n);
+        int cur = 3;   // 3s
+        for (int k = 0; k < n; k++) if (t[k] == p.splash_secs) cur = k;
+        cur = (cur + n + dir) % n;
+        p.splash_secs = t[cur];
+        _task->markUIPrefsDirty();
+        return true;
+      }
       case BATTERY:
         p.batt_percent = !p.batt_percent;
         _task->markUIPrefsDirty();
@@ -560,9 +610,8 @@ public:
 #define CANNED_TAG_ADD   100   // keyboard tag for a new reply (edits use the slot index)
 
 class CannedEditScreen : public ListScreen, public KeyboardListener {
-  enum PopupItem { POPUP_EDIT, POPUP_DELETE, POPUP_CANCEL, POPUP_COUNT };
-  bool _popup;
-  int _popup_sel;
+  enum PopupItem { POPUP_EDIT, POPUP_DELETE, POPUP_CANCEL };
+  PopupMenu _popup;
 
   int numReplies() {
     int n = 0;
@@ -607,8 +656,8 @@ protected:
   void onEnter(int i) override {
     int n = numReplies();
     if (i < n) {
-      _popup = true;
-      _popup_sel = POPUP_EDIT;
+      static const char* const choices[] = { "Edit", "Delete", "Cancel" };
+      _popup.show(choices, 3);
     } else if (n >= UI_CANNED_COUNT) {
       _task->showAlert("Max 8 replies", 900);
     } else {
@@ -617,68 +666,29 @@ protected:
   }
 
 public:
-  CannedEditScreen(UITask* task) : ListScreen(task), _popup(false), _popup_sel(0) { }
+  CannedEditScreen(UITask* task) : ListScreen(task) { }
 
   void open() {
     compact();   // tidy up files from older versions that had gaps
-    _popup = false;
+    _popup.close();
     reset();
   }
 
   int render(DisplayDriver& display) override {
     int next = ListScreen::render(display);
-    if (!_popup) return next;
-
-    // Edit / Delete / Cancel popup over the list
-    static const char* const labels[POPUP_COUNT] = { "Edit", "Delete", "Cancel" };
-    const int w = 60, row_h = 10;
-    const int h = POPUP_COUNT * row_h + 4;
-    int x = (display.width() - w) / 2;
-    int y = (display.height() - h) / 2 + 4;
-    display.setColor(UIColor::window_bkg);
-    display.fillRect(x - 1, y - 1, w + 2, h + 2);
-    display.setColor(UIColor::primary_txt);
-    display.drawRect(x, y, w, h);
-    for (int k = 0; k < POPUP_COUNT; k++) {
-      int ry = y + 2 + k * row_h;
-      if (k == _popup_sel) {
-        display.setColor(UIColor::primary_txt);
-        display.fillRect(x + 2, ry, w - 4, row_h);
-        display.setColor(UIColor::window_bkg);
-      } else {
-        display.setColor(UIColor::primary_txt);
-      }
-      display.drawTextCentered(display.width() / 2, ry + 1, labels[k]);
-    }
-    display.setColor(UIColor::primary_txt);
+    _popup.render(display);
     return next;
   }
 
   bool handleInput(char c) override {
-    if (!_popup) return ListScreen::handleInput(c);
-
-    switch (c) {
-      case KEY_UP:
-        _popup_sel = (_popup_sel + POPUP_COUNT - 1) % POPUP_COUNT;
-        return true;
-      case KEY_DOWN:
-        _popup_sel = (_popup_sel + 1) % POPUP_COUNT;
-        return true;
-      case KEY_ENTER:
-      case KEY_RIGHT:
-        _popup = false;
-        if (_popup_sel == POPUP_EDIT) {
-          _task->openKeyboard("Quick reply", _task->uiPrefs().canned[_sel], UI_CANNED_LEN - 1, this, _sel);
-        } else if (_popup_sel == POPUP_DELETE) {
-          deleteReply(_sel);
-        }
-        return true;
-      case KEY_LEFT:
-      case KEY_CANCEL:
-        _popup = false;
-        return true;
+    if (!_popup.isOpen()) return ListScreen::handleInput(c);
+    int choice = _popup.handleInput(c);
+    if (choice == POPUP_EDIT) {
+      _task->openKeyboard("Quick reply", _task->uiPrefs().canned[_sel], UI_CANNED_LEN - 1, this, _sel);
+    } else if (choice == POPUP_DELETE) {
+      deleteReply(_sel);
     }
-    return true;   // popup is modal
+    return true;
   }
 
   void onKeyboardDone(int tag, const char* text) override {

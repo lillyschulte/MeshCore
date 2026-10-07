@@ -17,3 +17,6 @@ compile_commands.json
 .venv/
 venv/
 platformio.local.ini
+
+# local splash screen customisation for the ui-l1 GUI
+examples/companion_radio/ui-l1/splash_custom.h

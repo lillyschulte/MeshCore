@@ -1,0 +1,10 @@
+// Local splash screen customisation for the ui-l1 GUI.
+//
+// Copy this file to splash_custom.h (in this directory) and edit it. splash_custom.h is
+// git-ignored, so personal branding never ends up in a commit or pull request. Without it
+// the standard MeshCore splash is shown.
+
+#pragma once
+
+// Extra line shown centered under the MeshCore logo (max ~21 characters)
+#define SPLASH_SUBTITLE "My MeshCore"

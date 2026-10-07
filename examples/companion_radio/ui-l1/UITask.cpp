@@ -10,7 +10,12 @@
 #include "Keyboard.h"
 #include "Screens.h"
 
-#define BOOT_SCREEN_MILLIS   3000   // 3 seconds
+#if defined(__has_include)
+  #if __has_include("splash_custom.h")
+    #include "splash_custom.h"   // local, git-ignored splash customisation (see splash_custom.h.example)
+  #endif
+#endif
+
 
 #ifdef PIN_STATUS_LED
 #define LED_ON_MILLIS     20
@@ -81,7 +86,7 @@ class SplashScreen : public UIScreen {
   char _version_info[12];
 
 public:
-  SplashScreen(UITask* task) : _task(task) {
+  SplashScreen(UITask* task, unsigned long duration_millis) : _task(task) {
     // strip off dash and commit hash by changing dash to null terminator
     // e.g: v1.2.3-abcdef -> v1.2.3
     const char *ver = FIRMWARE_VERSION;
@@ -92,7 +97,7 @@ public:
     memcpy(_version_info, ver, len);
     _version_info[len] = 0;
 
-    dismiss_after = millis() + BOOT_SCREEN_MILLIS;
+    dismiss_after = millis() + duration_millis;
   }
 
   int render(DisplayDriver& display) override {
@@ -101,22 +106,32 @@ public:
     int logoWidth = 128;
     display.drawXbm((display.width() - logoWidth) / 2, 3, meshcore_logo, logoWidth, 13);
 
+#ifdef SPLASH_SUBTITLE
+    // custom line under the logo, the rest moves down to make room
+    display.setColor(UIColor::primary_txt);
+    display.setTextSize(1);
+    display.drawTextCentered(display.width()/2, 19, SPLASH_SUBTITLE);
+    const int website_y = 30, version_y = 41, date_y = 52;
+#else
+    const int website_y = 22, version_y = 35, date_y = 48;
+#endif
+
     // meshcore website
     const char* website = "https://meshcore.io";
     display.setColor(UIColor::primary_txt);
     display.setTextSize(1);
     uint16_t websiteWidth = display.getTextWidth(website);
-    display.setCursor((display.width() - websiteWidth) / 2, 22);
+    display.setCursor((display.width() - websiteWidth) / 2, website_y);
     display.print(website);
 
     // version info
     display.setColor(UIColor::primary_txt);
     display.setTextSize(1);
-    display.drawTextCentered(display.width()/2, 35, _version_info);
+    display.drawTextCentered(display.width()/2, version_y, _version_info);
 
     display.setColor(UIColor::secondary_txt);
     display.setTextSize(1);
-    display.drawTextCentered(display.width()/2, 48, FIRMWARE_BUILD_DATE);
+    display.drawTextCentered(display.width()/2, date_y, FIRMWARE_BUILD_DATE);
 
     return 1000;
   }
@@ -520,7 +535,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   ui_started_at = millis();
   _alert_expiry = 0;
 
-  splash = new SplashScreen(this);
+  splash = new SplashScreen(this, (unsigned long)_ui_prefs.splash_secs * 1000UL);
   home = new HomeScreen(this, &rtc_clock, node_prefs);
   menu = new MainMenuScreen(this);
   threads = new ThreadsScreen(this);
@@ -533,7 +548,11 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   keyboard = new KeyboardScreen(this);
 
   _stack_len = 0;
-  push(splash);
+  if (_ui_prefs.splash_secs > 0) {
+    push(splash);
+  } else {
+    gotoHomeScreen();   // splash turned off in Settings
+  }
 }
 
 /* navigation */
@@ -597,7 +616,7 @@ void UITask::pop() {
 }
 
 void UITask::openMenu() {
-  ((ListScreen *) (MainMenuScreen *) menu)->reset();
+  ((MainMenuScreen *) menu)->reset();
   push(menu);
 }
 void UITask::openThreads() {

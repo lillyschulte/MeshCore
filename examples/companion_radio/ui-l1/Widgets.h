@@ -183,3 +183,76 @@ public:
     return false;
   }
 };
+
+// small modal choice popup drawn over the current screen
+#define POPUP_NONE     -1   // input consumed, still open
+#define POPUP_CLOSED   -2   // cancelled
+
+class PopupMenu {
+  const char* const* _labels;
+  int _count, _sel;
+  bool _open;
+
+public:
+  PopupMenu() : _labels(NULL), _count(0), _sel(0), _open(false) { }
+
+  void show(const char* const* labels, int count, int sel = 0) {
+    _labels = labels;
+    _count = count;
+    _sel = sel;
+    _open = true;
+  }
+  void close() { _open = false; }
+  bool isOpen() const { return _open; }
+
+  void render(DisplayDriver& display) {
+    if (!_open) return;
+    const int row_h = 10;
+    int w = 60;
+    for (int k = 0; k < _count; k++) {
+      int lw = display.getTextWidth(_labels[k]) + 16;
+      if (lw > w) w = lw;
+    }
+    int h = _count * row_h + 4;
+    int x = (display.width() - w) / 2;
+    int y = (display.height() - h) / 2 + 4;
+    display.setTextSize(1);
+    display.setColor(UIColor::window_bkg);
+    display.fillRect(x - 1, y - 1, w + 2, h + 2);
+    display.setColor(UIColor::primary_txt);
+    display.drawRect(x, y, w, h);
+    for (int k = 0; k < _count; k++) {
+      int ry = y + 2 + k * row_h;
+      if (k == _sel) {
+        display.setColor(UIColor::primary_txt);
+        display.fillRect(x + 2, ry, w - 4, row_h);
+        display.setColor(UIColor::window_bkg);
+      } else {
+        display.setColor(UIColor::primary_txt);
+      }
+      display.drawTextCentered(display.width() / 2, ry + 1, _labels[k]);
+    }
+    display.setColor(UIColor::primary_txt);
+  }
+
+  // returns the chosen index, POPUP_CLOSED if cancelled, or POPUP_NONE
+  int handleInput(char c) {
+    switch (c) {
+      case KEY_UP:
+        _sel = (_sel + _count - 1) % _count;
+        return POPUP_NONE;
+      case KEY_DOWN:
+        _sel = (_sel + 1) % _count;
+        return POPUP_NONE;
+      case KEY_ENTER:
+      case KEY_RIGHT:
+        _open = false;
+        return _sel;
+      case KEY_LEFT:
+      case KEY_CANCEL:
+        _open = false;
+        return POPUP_CLOSED;
+    }
+    return POPUP_NONE;   // modal: swallow everything else
+  }
+};
